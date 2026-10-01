@@ -62,7 +62,7 @@ def apply_action(item, action, payload, actor, role):
         return "verified", current, {"assessment": current["assessment"], "verification": current["verification"]}
 
     if action == "advise":
-        _need_status(item, {"verified", "advisory"})
+        _need_status(item, {"verified", "advisory", "switched", "flushing", "disinfected", "sampled"})
         notice_id = _text(payload, "notice_id")
         notice = {
             "notice_id": notice_id,
@@ -79,7 +79,10 @@ def apply_action(item, action, payload, actor, role):
         _need_status(item, {"verified", "advisory", "flushing", "disinfected", "sampled", "switched"})
         alternate = _text(payload, "alternate_source_id")
         current["alternate_source_id"] = alternate
-        return "switched", current, {"alternate_source_id": alternate}
+        new_zones = payload.get("zone_ids")
+        if isinstance(new_zones, list) and new_zones and all(isinstance(zone, str) and zone.strip() for zone in new_zones):
+            current["zone_ids"] = [zone.strip() for zone in new_zones]
+        return "switched", current, {"alternate_source_id": alternate, "zone_ids": current.get("zone_ids")}
 
     if action == "flush":
         _need_status(item, {"advisory", "flushing", "switched"})
@@ -125,3 +128,73 @@ def apply_action(item, action, payload, actor, role):
         return "cancelled", current, {"reason": reason}
 
     raise DomainError("unknown_action", "不支持的操作")
+
+
+# ---------------------------------------------------------------------------
+# 通知台账：渠道回执按渠道真实时间推进，重复回执只记一次
+# ---------------------------------------------------------------------------
+
+RECEIPT_STATUS_ORDER = {"pending": 0, "failed": 1, "success": 2}
+
+
+def apply_receipt(status, channel_time, attempts, new_status, new_channel_time, error=None):
+    """幂等的回执推进。
+
+    - success 是终态，重复回执只记一次，不回退；
+    - 渠道真实时间更早的乱序回执不能把状态回滚；
+    - 返回 (new_status, new_channel_time, new_attempts, changed)。
+    """
+    if status == "success":
+        return "success", channel_time, attempts, False
+    if channel_time and new_channel_time and new_channel_time < channel_time:
+        return status, channel_time, attempts, False
+    if new_status == "success":
+        return "success", new_channel_time or channel_time, attempts + 1, True
+    if new_status == "failed":
+        return "failed", new_channel_time or channel_time, attempts + 1, True
+    return "pending", channel_time, attempts + 1, True
+
+
+def current_basis(item):
+    """当前有效的通知依据：水源切换后以备用水源为准。"""
+    payload = item.get("payload", {})
+    return payload.get("alternate_source_id") or payload.get("source_id")
+
+
+def receipt_gaps(item, notices):
+    """恢复供水前的回执缺口核对。
+
+    只承认依据与当前水源一致的通知；片区在某个渠道上有一条成功回执才算覆盖。
+    返回 (gaps, stale_notices)，gaps 形如 [{"zone_id": "Z-2", "missing": ["broadcast"]}]。
+    """
+    payload = item.get("payload", {})
+    current_zones = payload.get("zone_ids", []) or []
+    basis = current_basis(item)
+    current_notices = [notice for notice in notices if notice.get("basis") == basis]
+    stale_notices = [notice for notice in notices if notice.get("basis") != basis]
+
+    required_channels = set()
+    for notice in current_notices:
+        required_channels.update(notice.get("channels", []))
+    if not required_channels:
+        required_channels = {"sms", "broadcast"}
+
+    gaps = []
+    for zone in current_zones:
+        missing = []
+        for channel in sorted(required_channels):
+            covered = any(
+                zone in (notice.get("target_zones") or [])
+                and any(
+                    receipt.get("channel") == channel
+                    and receipt.get("zone_id") == zone
+                    and receipt.get("status") == "success"
+                    for receipt in notice.get("receipts", [])
+                )
+                for notice in current_notices
+            )
+            if not covered:
+                missing.append(channel)
+        if missing:
+            gaps.append({"zone_id": zone, "missing": missing})
+    return gaps, stale_notices

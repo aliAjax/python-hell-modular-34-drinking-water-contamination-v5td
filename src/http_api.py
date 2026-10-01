@@ -41,7 +41,11 @@ def build_handler(service, static_dir):
         def _error(self, exc):
             status = getattr(exc, "status", 500)
             code = getattr(exc, "code", "internal_error")
-            self._send(status, {"error": code, "message": str(exc)})
+            body = {"error": code, "message": str(exc)}
+            details = getattr(exc, "details", None)
+            if details:
+                body["details"] = details
+            self._send(status, body)
 
         def do_GET(self):
             try:
@@ -58,6 +62,8 @@ def build_handler(service, static_dir):
                 if len(parts) == 4 and parts[:2] == ["api", "items"] and parts[3] == "audit":
                     item = service.get_item(int(parts[2]))
                     return self._send(200, {"events": item["audit"]})
+                if len(parts) == 4 and parts[:2] == ["api", "items"] and parts[3] == "ledger":
+                    return self._send(200, service.ledger_view(int(parts[2])))
                 if path == "/":
                     file_path = os.path.join(static_dir, "index.html")
                     with open(file_path, "rb") as handle:
@@ -86,6 +92,15 @@ def build_handler(service, static_dir):
                         raise DomainError("action_required", "缺少 action", 400)
                     expected = payload.pop("expected_version", None)
                     return self._send(200, service.act(int(parts[2]), action, payload, actor, role, expected, region))
+                if len(parts) == 4 and parts[:2] == ["api", "items"] and parts[3] == "notices":
+                    return self._send(201, service.dispatch_notice(int(parts[2]), payload, actor, role, region))
+                if len(parts) == 5 and parts[:2] == ["api", "items"] and parts[3] == "notices" and parts[4] == "resume":
+                    return self._send(200, service.resume_pending(actor, role, item_id=int(parts[2])))
+                if parts == ["api", "notices", "resume"]:
+                    return self._send(200, service.resume_pending(actor, role))
+                if len(parts) == 4 and parts[:2] == ["api", "items"] and parts[3] == "receipts":
+                    result = service.record_receipt(int(parts[2]), payload, actor, role, region)
+                    return self._send(201 if result.get("recorded") else 200, result)
                 return self._send(404, {"error": "not_found", "message": "接口不存在"})
             except DomainError as exc:
                 return self._error(exc)

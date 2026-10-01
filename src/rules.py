@@ -79,7 +79,23 @@ def apply_action(item, action, payload, actor, role):
         _need_status(item, {"verified", "advisory", "flushing", "disinfected", "sampled", "switched"})
         alternate = _text(payload, "alternate_source_id")
         current["alternate_source_id"] = alternate
-        return "switched", current, {"alternate_source_id": alternate}
+        event = {"alternate_source_id": alternate}
+        new_zones = payload.get("zone_ids")
+        if new_zones is not None:
+            if not isinstance(new_zones, list) or not new_zones:
+                raise DomainError("zones_required", "至少需要一个受影响区域")
+            if any(not isinstance(zone, str) or not zone.strip() for zone in new_zones):
+                raise DomainError("invalid_zones", "区域编号必须是字符串列表")
+            new_zones = [zone.strip() for zone in new_zones]
+            if sorted(new_zones) != sorted(current.get("zone_ids", [])):
+                # 受影响片区变化：原通知依据作废，通知账本升版重新核对
+                current["zone_ids"] = new_zones
+                basis = int(current.get("notice_basis", 1)) + 1
+                current["notice_basis"] = basis
+                event["zones_changed"] = True
+                event["zone_ids"] = new_zones
+                event["notice_basis"] = basis
+        return "switched", current, event
 
     if action == "flush":
         _need_status(item, {"advisory", "flushing", "switched"})

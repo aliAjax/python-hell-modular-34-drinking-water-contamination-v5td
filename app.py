@@ -4,6 +4,7 @@ from http.server import ThreadingHTTPServer
 
 from src.repository import Repository
 from src.service import Service
+from src.channels import InMemoryChannelGateway
 from src.http_api import build_handler
 
 
@@ -20,10 +21,11 @@ def main():
         print("initialized: %s" % args.db)
         return
 
-    service = Service(repo)
+    service = Service(repo, InMemoryChannelGateway())
     static_dir = os.path.join(os.path.dirname(__file__), "static")
     server = ThreadingHTTPServer(("127.0.0.1", args.port), build_handler(service, static_dir))
     server.service = service
+    server.gateway = service.gateway
     print("drinking water contamination service listening on http://127.0.0.1:%d" % args.port)
     try:
         server.serve_forever()

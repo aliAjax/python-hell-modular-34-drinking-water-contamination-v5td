@@ -34,6 +34,22 @@ class WorkflowTest(unittest.TestCase):
         item = self.service.act(item["id"], "verify", {"sample_count": 2}, "analyst-1", "analyst", item["version"])
         self.assertEqual(item["payload"]["assessment"]["level"], "high")
         item = self.service.act(item["id"], "advise", {"notice_id": "N-1", "kind": "boil", "message": "煮沸"}, "disp-1", "dispatcher", item["version"])
+        self.service.dispatch_notice(item["id"], {
+            "notice_id": "N-1",
+            "kind": "boil",
+            "message": "煮沸",
+            "expected_version": item["version"],
+        }, "disp-1", "dispatcher")
+        for zone in ("Z-1", "Z-2"):
+            for channel in ("sms", "broadcast"):
+                self.service.record_receipt(item["id"], {
+                    "notice_id": "N-1",
+                    "zone_id": zone,
+                    "channel": channel,
+                    "result": "success",
+                    "reported_at": "2026-09-27T08:00:00+00:00",
+                }, "chan-1", "channel_agent")
+        item = self.service.get_item(item["id"])
         item = self.service.act(item["id"], "switch_source", {"alternate_source_id": "ALT-1"}, "coord-1", "coordinator", item["version"])
         item = self.service.act(item["id"], "flush", {"zone_id": "Z-1"}, "field-1", "field_operator", item["version"])
         item = self.service.act(item["id"], "disinfect", {"zone_id": "Z-1", "completed": True}, "field-1", "field_operator", item["version"])
